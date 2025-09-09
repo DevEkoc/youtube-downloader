@@ -48,20 +48,37 @@ def download_task(task_id, url, download_format, quality, temp_dir):
     try:
         tasks[task_id]['status'] = 'downloading'
         
+        # Configuration anti-bot commune
+        common_opts = {
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-us,en;q=0.5',
+                'Accept-Encoding': 'gzip,deflate',
+                'Accept-Charset': 'ISO-8859-1,utf-8;q=0.7,*;q=0.7',
+                'Keep-Alive': '300',
+                'Connection': 'keep-alive',
+            },
+            'sleep_interval': 1,
+            'max_sleep_interval': 5,
+            'sleep_interval_requests': 1,
+            'progress_hooks': [progress_hook],
+            'socket_timeout': 120,
+            'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
+        }
+
         if download_format == 'audio':
             ydl_opts = {
+                **common_opts,
                 'format': 'bestaudio/best',
                 'extractaudio': True,
                 'audioformat': 'mp3',
                 'audioquality': '0',
-                'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
                 'postprocessors': [{
                     'key': 'FFmpegExtractAudio',
                     'preferredcodec': 'mp3',
                     'preferredquality': '192',
                 }],
-                'progress_hooks': [progress_hook],
-                'socket_timeout': 120,
             }
         else:  # Format vidéo
             # Utiliser le format qui combine vidéo + audio automatiquement
@@ -72,11 +89,9 @@ def download_task(task_id, url, download_format, quality, temp_dir):
                 format_string = f'bestvideo[height<={height}]+bestaudio/best[height<={height}]/best'
 
             ydl_opts = {
+                **common_opts,
                 'format': format_string,
                 'merge_output_format': 'mp4',
-                'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
-                'progress_hooks': [progress_hook],
-                'socket_timeout': 120,
             }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -108,8 +123,17 @@ def download_task(task_id, url, download_format, quality, temp_dir):
                 raise FileNotFoundError("Le fichier final n'a pas été trouvé après le téléchargement.")
 
     except Exception as e:
+        error_message = str(e)
+        # Messages d'erreur plus clairs pour l'utilisateur
+        if "Sign in to confirm you're not a bot" in error_message:
+            error_message = "YouTube a temporairement bloqué cette requête. Veuillez réessayer dans quelques minutes."
+        elif "Video unavailable" in error_message:
+            error_message = "Cette vidéo n'est pas disponible pour téléchargement."
+        elif "network" in error_message.lower():
+            error_message = "Problème de connexion réseau. Veuillez réessayer."
+        
         tasks[task_id]['status'] = 'error'
-        tasks[task_id]['message'] = str(e)
+        tasks[task_id]['message'] = error_message
 
 @app.route('/api/preview', methods=['POST'])
 def preview_content():
@@ -125,6 +149,19 @@ def preview_content():
             'quiet': True,
             'no_warnings': True,
             'extract_flat': False,
+            # Anti-bot measures
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-us,en;q=0.5',
+                'Accept-Encoding': 'gzip,deflate',
+                'Accept-Charset': 'ISO-8859-1,utf-8;q=0.7,*;q=0.7',
+                'Keep-Alive': '300',
+                'Connection': 'keep-alive',
+            },
+            'sleep_interval': 1,
+            'max_sleep_interval': 5,
+            'sleep_interval_requests': 1,
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -186,7 +223,22 @@ def preview_content():
         print(f"Preview error: {e}")
         import traceback
         traceback.print_exc()
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        
+        error_message = str(e)
+        # Messages d'erreur plus clairs pour l'utilisateur
+        if "Sign in to confirm you're not a bot" in error_message:
+            error_message = "YouTube a temporairement bloqué cette requête. Veuillez réessayer dans quelques minutes ou essayer avec une autre vidéo."
+        elif "Video unavailable" in error_message:
+            error_message = "Cette vidéo n'est pas disponible (privée, supprimée ou géo-bloquée)."
+        elif "This video is no longer available" in error_message:
+            error_message = "Cette vidéo n'existe plus ou a été supprimée."
+        elif "network" in error_message.lower():
+            error_message = "Problème de connexion réseau. Veuillez réessayer."
+        else:
+            # Garder le message original pour les autres erreurs
+            error_message = f"Impossible d'analyser cette vidéo : {error_message}"
+            
+        return jsonify({'status': 'error', 'message': error_message}), 500
 
 @app.route('/api/download', methods=['POST'])
 def start_download():

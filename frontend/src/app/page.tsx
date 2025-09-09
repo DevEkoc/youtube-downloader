@@ -263,8 +263,8 @@ export default function HomePage() {
     <main className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-br from-gray-900 to-blue-900 p-4 sm:p-8 font-sans">
       <div className="w-full max-w-4xl bg-black/30 backdrop-blur-xl rounded-2xl shadow-2xl border border-white/10 overflow-hidden">
         <div className="p-8 sm:p-10">
-          <h1 className="text-3xl sm:text-4xl font-bold mb-6 text-center text-transparent bg-clip-text bg-gradient-to-r from-cyan-300 to-blue-400">
-            YouTube Downloader
+          <h1 className="text-3xl sm:text-4xl font-bold mb-6 pb-1 text-center text-transparent bg-clip-text bg-gradient-to-r from-cyan-300 to-blue-400">
+            Téléchargeur YouTube
           </h1>
 
           {/* Formulaire d'URL (caché après preview) */}
@@ -276,7 +276,7 @@ export default function HomePage() {
                   type="url"
                   value={url}
                   onChange={(e) => setUrl(e.target.value)}
-                  placeholder="https://www.youtube.com/watch?v=... ou playlist"
+                  placeholder="https://www.youtube.com/watch?v=... collez l'URL ici"
                   className="w-full pl-12 pr-4 py-3 bg-white/5 border border-white/10 rounded-lg focus:ring-2 focus:ring-cyan-400 focus:border-cyan-400 outline-none transition-all duration-300 text-white placeholder-gray-400"
                   required
                   disabled={isLoadingPreview}
