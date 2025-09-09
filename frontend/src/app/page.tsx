@@ -56,7 +56,7 @@ export default function HomePage() {
   const [task, setTask] = useState<TaskStatus | null>(null);
   const [downloadSuccess, setDownloadSuccess] = useState<string | null>(null);
 
-  const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:5001';
+  const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL;
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // --- Fonction pour vérifier le statut de la tâche ---
@@ -362,6 +362,10 @@ export default function HomePage() {
         
         <div className="bg-black/20 px-8 py-3 text-xs text-gray-400 text-center border-t border-white/10">
           <p>Téléchargement avec audio - Vidéos individuelles uniquement</p>
+          <p>Powered by
+            <a href={'https://devekoc.com'} className={'text-white'}>DevEkoc</a>
+            - 2025
+          </p>
         </div>
       </div>
     </main>
