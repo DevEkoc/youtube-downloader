@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 // --- Icônes ---
 const YouTubeIcon = () => (
@@ -29,38 +29,80 @@ type VideoFormat = {
   quality: string;
   type: 'video' | 'audio';
   filesize?: number;
-  format_id?: string;
-  url?: string;
   ext: string;
-};
-
-type VideoInfo = {
-  title: string;
-  duration: number;
-  url: string;
-  formats: VideoFormat[];
 };
 
 type PreviewData = {
   status: string;
-  type: 'video' | 'playlist';
+  type: 'video';
   title: string;
   duration?: number;
   url?: string;
   formats?: VideoFormat[];
-  count?: number;
-  entries?: VideoInfo[];
-  common_qualities?: string[];
+};
+
+type TaskStatus = {
+  status: 'starting' | 'downloading' | 'merging' | 'complete' | 'error';
+  progress?: number;
+  message?: string;
+  filename?: string;
+  task_id?: string;
 };
 
 export default function HomePage() {
   const [url, setUrl] = useState<string>('');
   const [preview, setPreview] = useState<PreviewData | null>(null);
   const [isLoadingPreview, setIsLoadingPreview] = useState<boolean>(false);
-  const [selectedPlaylistQuality, setSelectedPlaylistQuality] = useState<string>('');
-  const [downloadingItems, setDownloadingItems] = useState<Set<string>>(new Set());
+  const [task, setTask] = useState<TaskStatus | null>(null);
+  const [downloadSuccess, setDownloadSuccess] = useState<string | null>(null);
 
-  const API_BASE_URL = 'http://127.0.0.1:5001';
+  const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:5001';
+  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  // --- Fonction pour vérifier le statut de la tâche ---
+  const checkStatus = async (taskId: string) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/status/${taskId}`);
+      if (!response.ok) {
+        throw new Error('Could not fetch status.');
+      }
+      const data: TaskStatus = await response.json();
+
+      setTask({ ...data, task_id: taskId });
+
+      if (data.status === 'complete' || data.status === 'error') {
+        if (pollingIntervalRef.current) {
+          clearInterval(pollingIntervalRef.current);
+          pollingIntervalRef.current = null;
+        }
+        
+        if (data.status === 'complete') {
+          setDownloadSuccess(`${data.filename} est prêt !`);
+          setTimeout(() => setDownloadSuccess(null), 5000);
+        }
+      }
+    } catch (error) {
+      console.error('Polling error:', error);
+      setTask({
+        status: 'error',
+        message: error instanceof Error ? error.message : 'An unexpected error occurred while polling.',
+        task_id: taskId
+      });
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
+    }
+  };
+
+  // --- Nettoyage de l'intervalle au démontage du composant ---
+  useEffect(() => {
+    return () => {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+      }
+    };
+  }, []);
 
   // --- Fonction pour obtenir un aperçu du contenu ---
   const getPreview = async () => {
@@ -80,11 +122,6 @@ export default function HomePage() {
 
       const previewData: PreviewData = await response.json();
       setPreview(previewData);
-      
-      // Pré-sélectionner la première qualité commune pour les playlists
-      if (previewData.type === 'playlist' && previewData.common_qualities && previewData.common_qualities.length > 0) {
-        setSelectedPlaylistQuality(previewData.common_qualities[0]);
-      }
     } catch (error) {
       console.error('Preview error:', error);
       setPreview(null);
@@ -115,103 +152,49 @@ export default function HomePage() {
     return `${minutes}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // --- Fonction pour télécharger une vidéo individuelle ---
-  const downloadVideo = async (videoUrl: string, quality: string, title: string) => {
-    const downloadKey = `${videoUrl}_${quality}`;
+  // --- Fonction pour télécharger une vidéo ---
+  const downloadVideo = async (quality: string) => {
+    if (!preview?.url) return;
     
-    if (downloadingItems.has(downloadKey)) return;
-    
-    setDownloadingItems(prev => new Set(prev).add(downloadKey));
-    
+    if (task && (task.status === 'downloading' || task.status === 'starting' || task.status === 'merging')) return;
+
+    setTask({ status: 'starting', message: 'Initiating download...' });
+    setDownloadSuccess(null);
+
     try {
-      const response = await fetch(`${API_BASE_URL}/api/download-video`, {
+      const format = quality === 'audio' ? 'audio' : 'video';
+      const response = await fetch(`${API_BASE_URL}/api/download`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: videoUrl, quality }),
+        body: JSON.stringify({ url: preview.url, format, quality }),
       });
 
-      if (!response.ok) {
-        throw new Error('Download failed');
+      if (response.status !== 202) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || 'Failed to start download process.');
       }
 
-      // Créer le lien de téléchargement
-      const blob = await response.blob();
-      const downloadUrl = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = downloadUrl;
-      
-      // Nom de fichier avec qualité
-      const cleanTitle = title.replace(/[^a-zA-Z0-9 ]/g, '').trim();
-      const filename = quality === 'audio' ? `${cleanTitle}.mp3` : `${cleanTitle}_${quality}.mp4`;
-      link.download = filename;
-      
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(downloadUrl);
-      
+      const { task_id } = await response.json();
+      setTask({ status: 'starting', task_id: task_id, message: 'Download started, waiting for progress...' });
+
+      // Démarrer le polling
+      pollingIntervalRef.current = setInterval(() => {
+        checkStatus(task_id);
+      }, 2000); // Toutes les 2 secondes
+
     } catch (error) {
-      console.error('Download error:', error);
-      alert('Erreur lors du téléchargement');
-    } finally {
-      setDownloadingItems(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(downloadKey);
-        return newSet;
-      });
+      const errorMessage = error instanceof Error ? error.message : 'An unexpected error occurred.';
+      setTask({ status: 'error', message: `Failed to start download: ${errorMessage}` });
     }
   };
 
-  // --- Fonction pour télécharger une playlist ---
-  const downloadPlaylist = async () => {
-    if (!preview || !selectedPlaylistQuality || !preview.entries) return;
-    
-    const downloadKey = `playlist_${selectedPlaylistQuality}`;
-    
-    if (downloadingItems.has(downloadKey)) return;
-    
-    setDownloadingItems(prev => new Set(prev).add(downloadKey));
-    
-    try {
-      const urls = preview.entries.map(entry => entry.url);
-      
-      const response = await fetch(`${API_BASE_URL}/api/download-playlist`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          urls, 
-          quality: selectedPlaylistQuality,
-          playlist_title: preview.title 
-        }),
-      });
 
-      if (!response.ok) {
-        throw new Error('Playlist download failed');
-      }
-
-      // Créer le lien de téléchargement
-      const blob = await response.blob();
-      const downloadUrl = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = downloadUrl;
-      
-      const cleanTitle = preview.title.replace(/[^a-zA-Z0-9 ]/g, '').trim();
-      link.download = `${cleanTitle}_${selectedPlaylistQuality}.zip`;
-      
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(downloadUrl);
-      
-    } catch (error) {
-      console.error('Playlist download error:', error);
-      alert('Erreur lors du téléchargement de la playlist');
-    } finally {
-      setDownloadingItems(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(downloadKey);
-        return newSet;
-      });
+  // --- Fonction pour télécharger le fichier depuis le serveur ---
+  const downloadFile = () => {
+    if (task && task.task_id) {
+      window.open(`${API_BASE_URL}/api/download-file/${task.task_id}`, '_blank');
+      setDownloadSuccess('Fichier téléchargé avec succès !');
+      setTimeout(() => setDownloadSuccess(null), 5000);
     }
   };
 
@@ -219,8 +202,61 @@ export default function HomePage() {
   const startOver = () => {
     setUrl('');
     setPreview(null);
-    setSelectedPlaylistQuality('');
-    setDownloadingItems(new Set());
+    setTask(null);
+    setDownloadSuccess(null);
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+    }
+  };
+
+  // --- Rendu du message de statut ---
+  const renderStatusMessage = () => {
+    if (!task || (task.status === 'starting' && !task.task_id)) return null;
+
+    let message = '';
+    let isError = false;
+    let showProgress = false;
+
+    switch (task.status) {
+      case 'starting':
+        message = 'Starting download...';
+        break;
+      case 'downloading':
+        message = `Downloading... ${task.progress?.toFixed(1) ?? 0}%`;
+        showProgress = true;
+        break;
+      case 'merging':
+        message = 'Processing file, please wait...';
+        break;
+      case 'complete':
+        message = 'Votre fichier est prêt, téléchargez le en cliquant ci-dessous !';
+        break;
+      case 'error':
+        message = `Error: ${task.message || 'An unknown error occurred.'}`;
+        isError = true;
+        break;
+    }
+
+    return (
+      <div className={`mt-6 p-4 rounded-lg text-center text-sm transition-all duration-300 ${isError ? 'bg-red-500/20 text-red-300' : 'bg-blue-500/20 text-blue-300'}`}>
+        <p>{message}</p>
+        {showProgress && (
+          <div className="w-full bg-gray-700 rounded-full h-2.5 mt-2">
+            <div className="bg-cyan-400 h-2.5 rounded-full" style={{ width: `${task.progress ?? 0}%` }}></div>
+          </div>
+        )}
+        {task && task.status === 'complete' && task.task_id && (
+          <button
+            onClick={downloadFile}
+            className="mt-3 inline-flex items-center justify-center py-2 px-4 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 rounded-lg text-white font-bold transform hover:scale-105 transition-all duration-300"
+          >
+            <DownloadIcon />
+            Télécharger le fichier
+          </button>
+        )}
+      </div>
+    );
   };
 
   return (
@@ -263,14 +299,9 @@ export default function HomePage() {
               {/* En-tête avec bouton retour */}
               <div className="flex items-center justify-between">
                 <div>
-                  <h2 className="text-xl font-bold text-cyan-300">
-                    {preview.type === 'playlist' ? '📋 Playlist' : '🎬 Vidéo'}
-                  </h2>
+                  <h2 className="text-xl font-bold text-cyan-300">🎬 Vidéo</h2>
                   <p className="text-white font-medium">{preview.title}</p>
-                  {preview.type === 'playlist' && (
-                    <p className="text-gray-400 text-sm">{preview.count} vidéos</p>
-                  )}
-                  {preview.type === 'video' && preview.duration && (
+                  {preview.duration && (
                     <p className="text-gray-400 text-sm">Durée: {formatDuration(preview.duration)}</p>
                   )}
                 </div>
@@ -282,14 +313,23 @@ export default function HomePage() {
                 </button>
               </div>
 
-              {/* Vidéo unique - Liste des qualités */}
-              {preview.type === 'video' && preview.formats && (
+              {/* Message de succès */}
+              {downloadSuccess && (
+                <div className="p-4 bg-green-500/20 border border-green-500/30 rounded-lg">
+                  <div className="flex items-center">
+                    <span className="text-green-400 mr-2">✅</span>
+                    <p className="text-green-300 font-medium">{downloadSuccess}</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Liste des qualités */}
+              {preview.formats && (!task || (task.status === 'starting' && !task.task_id)) && (
                 <div>
                   <h3 className="text-lg font-semibold text-cyan-300 mb-4">Choisissez votre qualité :</h3>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     {preview.formats.map((format, index) => {
-                      const downloadKey = `${preview.url}_${format.quality}`;
-                      const isDownloading = downloadingItems.has(downloadKey);
+                      const isDownloading = Boolean(task && (task.status === 'downloading' || task.status === 'merging' || (task.status === 'starting' && task.task_id)));
                       
                       return (
                         <div key={index} className="flex items-center justify-between p-4 bg-white/5 rounded-lg border border-white/10">
@@ -300,16 +340,12 @@ export default function HomePage() {
                             <p className="text-gray-400 text-sm">{formatFileSize(format.filesize)}</p>
                           </div>
                           <button
-                            onClick={() => downloadVideo(preview.url!, format.quality, preview.title)}
+                            onClick={() => downloadVideo(format.quality)}
                             disabled={isDownloading}
                             className="flex items-center px-4 py-2 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-white font-medium transition-all duration-300"
                           >
-                            {isDownloading ? <SpinnerIcon /> : (
-                              <>
-                                <DownloadIcon />
-                                Télécharger
-                              </>
-                            )}
+                            <DownloadIcon />
+                            Télécharger
                           </button>
                         </div>
                       );
@@ -317,74 +353,15 @@ export default function HomePage() {
                   </div>
                 </div>
               )}
-
-              {/* Playlist - Sélection de qualité commune */}
-              {preview.type === 'playlist' && preview.common_qualities && (
-                <div>
-                  <h3 className="text-lg font-semibold text-cyan-300 mb-4">Télécharger la playlist complète :</h3>
-                  <div className="bg-white/5 rounded-lg border border-white/10 p-4">
-                    <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center">
-                      <div className="flex-1">
-                        <label htmlFor="playlist-quality" className="block text-sm font-medium text-gray-300 mb-2">
-                          Qualité pour toutes les vidéos :
-                        </label>
-                        <select
-                          id="playlist-quality"
-                          value={selectedPlaylistQuality}
-                          onChange={(e) => setSelectedPlaylistQuality(e.target.value)}
-                          className="w-full px-3 py-2 bg-white/10 border border-white/10 rounded-lg text-white focus:ring-2 focus:ring-cyan-400 focus:border-cyan-400 outline-none"
-                        >
-                          {preview.common_qualities.map((quality) => (
-                            <option key={quality} value={quality} className="bg-gray-800">
-                              {quality === 'audio' ? 'Audio (MP3)' : quality}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <button
-                        onClick={downloadPlaylist}
-                        disabled={!selectedPlaylistQuality || downloadingItems.has(`playlist_${selectedPlaylistQuality}`)}
-                        className="flex items-center px-6 py-3 bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-white font-bold transition-all duration-300"
-                      >
-                        {downloadingItems.has(`playlist_${selectedPlaylistQuality}`) ? <SpinnerIcon /> : (
-                          <>
-                            <DownloadIcon />
-                            Télécharger ZIP
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Aperçu des vidéos de la playlist */}
-                  {preview.entries && (
-                    <div className="mt-6">
-                      <h4 className="text-md font-medium text-cyan-300 mb-3">Contenu de la playlist :</h4>
-                      <div className="max-h-64 overflow-y-auto space-y-2">
-                        {preview.entries.slice(0, 20).map((entry, index) => (
-                          <div key={index} className="p-3 bg-white/5 rounded-lg">
-                            <p className="text-white text-sm truncate">{entry.title}</p>
-                            <p className="text-gray-400 text-xs">
-                              {formatDuration(entry.duration)} • {entry.formats.length} formats disponibles
-                            </p>
-                          </div>
-                        ))}
-                        {preview.entries.length > 20 && (
-                          <p className="text-gray-400 text-xs text-center p-2">
-                            ... et {preview.entries.length - 20} autres vidéos
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
+              
+              {/* Affichage du statut de téléchargement */}
+              {renderStatusMessage()}
             </div>
           )}
         </div>
         
         <div className="bg-black/20 px-8 py-3 text-xs text-gray-400 text-center border-t border-white/10">
-          <p>Streaming direct depuis YouTube - Aucun stockage serveur</p>
+          <p>Téléchargement avec audio - Vidéos individuelles uniquement</p>
         </div>
       </div>
     </main>

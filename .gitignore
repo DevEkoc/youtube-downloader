@@ -1,3 +1,6 @@
 venv/
 .next/
 node_modules/
+DEPLOYMENT.md
+.env.local
+__pycache__
